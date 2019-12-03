@@ -1,7 +1,6 @@
 'use strict'
 
 var crawler = require('license-crawler');
-var license = require('bower-license');
 
 exports.npmCrawler = function() {
     return crawler.crawlLicenses({
@@ -13,12 +12,4 @@ exports.npmCrawler = function() {
         sorted: 'package',            // 'license' or 'package'
         format: 'json',               // 'json' or 'txt'
         });
-}
-
-exports.bowerCrawlerImpl = function (left, right, callback) {
-    return function() { 
-        license.init('./', function(data, err) {
-            callback((err || false) ? left(err) : right(data))();
-        });
-    }
 }

@@ -1,18 +1,24 @@
 {
   "name": "purescript-print-dependencies",
   "version": "1.0.0",
-  "description": "Prints bower and npm licences",
+  "description": "Prints npm and spago licences",
   "main": "index.js",
   "directories": {
     "test": "test"
   },
   "scripts": {
+    "package": "spago bundle-app && pkg --out-path bin .",
+    "build": "spago build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "bin": "index.js",
   "author": "mark.eibes@zalando.de",
   "license": "ISC",
   "dependencies": {
-    "bower-license": "^0.4.4",
     "license-crawler": "0.0.5"
+  },
+  "devDependencies": {
+    "pkg": "^4.4.0",
+    "purescript": "^0.13.5"
   }
 }

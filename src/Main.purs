@@ -5,9 +5,9 @@ import Prelude
 import Control.Alt ((<|>))
 import Data.Array (some)
 import Data.Array as A
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
 import Data.Foldable (intercalate, maximum)
-import Data.Function.Uncurried (Fn3, runFn3)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (fromMaybe)
 import Data.Newtype (class Newtype, unwrap)
@@ -17,12 +17,10 @@ import Data.String.CodeUnits as CU
 import Data.Traversable (traverse)
 import Data.Unfoldable (replicate)
 import Effect (Effect)
-import Effect.Aff (Aff, Error, attempt, launchAff_, makeAff, message, nonCanceler)
+import Effect.Aff (Aff, attempt, launchAff_, message)
 import Effect.Class (class MonadEffect, liftEffect)
 import Effect.Class.Console (log, logShow)
 import Effect.Exception (catchException, throw)
-import Effect.Exception as Ex
-import Foreign (Foreign)
 import Foreign.Object (Object)
 import Foreign.Object as Obj
 import Node.Buffer as Buffer
@@ -31,7 +29,7 @@ import Node.Encoding (Encoding(..))
 import Node.FS.Sync (exists, readTextFile)
 import Node.FS.Sync as FS
 import Node.Process (exit)
-import Simple.JSON (class ReadForeign, E, read, readImpl, readJSON)
+import Simple.JSON (class ReadForeign, E, readImpl, readJSON)
 import Text.Parsing.Parser (Parser, runParser)
 import Text.Parsing.Parser.String (satisfy, skipSpaces)
 
@@ -52,31 +50,15 @@ instance rfAoS :: ReadForeign ArrayOrString where
   readImpl s = StringArray <$> (readImpl s <|> (pure <$> readImpl s))
 derive instance genericArrayOrString :: Generic ArrayOrString _
 
-type BowerEntry = { licenses :: ArrayOrString }
-
 npmToUnified :: String -> NpmEntry -> UnifiedResult
 npmToUnified name e =
   { depType: "npm", depName: name, depLicenses: intercalate ", " (unwrap e.license) }
-
-bowerToUnified :: String -> BowerEntry -> UnifiedResult
-bowerToUnified name e =
-  { depType: "bower", depName: unundefined name, depLicenses: intercalate ", " (unwrap e.licenses) }
-  where
-    unundefined = S.replace (S.Pattern "@undefined") (S.Replacement "")
 
 renderUnifiedResult :: UnifiedResult -> String
 renderUnifiedResult { depType, depName, depLicenses } =
   "|" <> depType <> "|" <> depName <> "|" <> depLicenses <> "|"
 
 foreign import npmCrawler :: Effect Unit
-foreign import bowerCrawlerImpl
-  :: Fn3 (Error   -> Either Error Foreign)
-         (Foreign -> Either Error Foreign)
-         (Either Error Foreign -> Effect Unit)
-         (Effect Unit)
-
-bowerCrawler :: (Either Error Foreign -> Effect Unit) -> Effect Unit
-bowerCrawler = runFn3 bowerCrawlerImpl Left Right
 
 fileName :: String
 fileName = "./tmpLicenses.json"
@@ -96,20 +78,25 @@ spagoCrawler =
     let
       spagoResults = t <> d
       getLicense :: _ -> _ { license :: String }
-      getLicense r = fileAsJSON ("./.spago/" <> r.name <> "/" <> r.version <> "/bower.json")
+      getLicense r = do
+        res <- fileAsJSON (bowerFile r)
+        pure $ either (\e -> { license: show e }) identity res
+      bowerFile r = "./.spago/" <> r.name <> "/" <> r.version <> "/bower.json"
       toUnifiedResult r = do
-        l <- getLicense r
-        pure { depName: r.name , depType: "spago" , depLicenses: l.license }
+        bowerJsonFileExists <- exists (bowerFile r)
+        if bowerJsonFileExists
+          then (do
+              l <- getLicense r
+              pure { depName: r.name , depType: "spago" , depLicenses: l.license }
+            )
+          else
+            (pure { depName: r.name, depType: "spago", depLicenses: "UNKNOWN" })
     traverse toUnifiedResult spagoResults
 
-
-fileAsJSON :: forall m r. ReadForeign r => MonadEffect m => String -> m r
+fileAsJSON :: forall m r. ReadForeign r => MonadEffect m => String -> m (Either String r)
 fileAsJSON path = do
   fileContent <- liftEffect $ readTextFile UTF8 path
-  liftEffect $ either
-    (\s -> Ex.throwException <<< Ex.error $ "Content of file " <> path <> " is not valid Json: " <> (show s))
-    pure
-    (readJSON fileContent)
+  pure (readJSON fileContent # (lmap (show)))
 
 spagoFormatParser :: Parser String (Array SpagoResult)
 spagoFormatParser =
@@ -200,13 +187,7 @@ run = do
   liftEffect $ catchException (const $ pure unit) (FS.unlink fileName)
   let npmResults = Obj.values $ Obj.mapWithKey npmToUnified content.report
   spago <- liftEffect isSpago
-  ps <-
-    if spago then
-      liftEffect spagoCrawler
-    else do
-      rawBowerResults :: Foreign <- makeAff $ \cb -> bowerCrawler cb $> nonCanceler
-      bowerObject <- explodeIfLeft $ read rawBowerResults
-      pure $ Obj.values $ Obj.mapWithKey bowerToUnified bowerObject
+  ps <- liftEffect spagoCrawler
   let combined = npmResults <> ps
   let sorted = A.sortWith _.depLicenses combined
   let maxLengths = calcMaxLengths sorted
